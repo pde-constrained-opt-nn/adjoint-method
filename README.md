@@ -9,7 +9,7 @@ This repository implements **Method 3 (Pure Adjoint)** and **Method 4 (Adjoint +
 |  | Grid Parameterization | NN Parameterization |
 |---|---|---|
 | **Autodiff Gradient** | Pritam's work | Mark's work |
-| **Adjoint Gradient** | **Frank — Pure Adjoint** | **Frank — Adjoint + NN** |
+| **Adjoint Gradient** | **Yifan — Pure Adjoint** | **Yifan — Adjoint + NN** |
 
 The key innovation of Method 4 is combining the **adjoint method** for efficient PDE gradient computation with **neural network parameterization** for implicit regularization and spectral control.
 
@@ -38,28 +38,32 @@ Implementation uses `jax.custom_vjp` + `jax.pure_callback` to wrap the numpy PDE
 ## Repository Structure
 
 ```
-1_Adjoint_Method/
+adjoint-method/
 │
-├── README.md                  # This file
+├── README.md                       # This file
+├── .gitignore
 │
-├── # ─── Core Modules ───
-├── pde_adjoint_solver.py      # Forward & adjoint PDE solvers (numpy)
-├── problems.py                # Problem registry (Problem 1–3, High-Osci)
-├── adjoint_nn.py              # Adjoint+NN hybrid (JAX/Flax/Optax)
+├── src/                            # Core source code
+│   ├── __init__.py                 #   Package init (re-exports all public API)
+│   ├── pde_adjoint_solver.py       #   Forward & adjoint PDE solvers (numpy)
+│   ├── problems.py                 #   Problem registry (Problem 1–3, High-Osci)
+│   └── adjoint_nn.py               #   Adjoint+NN hybrid (JAX/Flax/Optax)
 │
-├── # ─── Experiment Runners ───
-├── run_phase2.py              # Phase 2 experiments CLI
-├── baseline_verification.py   # Phase 1 baseline reproduction
+├── scripts/                        # CLI experiment runners
+│   ├── run_phase2.py               #   Phase 2: gradient verify + comparisons
+│   └── baseline_verification.py    #   Phase 1: baseline reproduction
 │
-├── # ─── Interactive Demo ───
-├── Adjoint_NN_Demo.ipynb      # Jupyter notebook with full walkthrough
+├── notebooks/                      # Jupyter notebooks
+│   ├── Adjoint_NN_Demo.ipynb       #   Interactive demo & walkthrough
+│   └── legacy/                     #   Original explorations (pre-refactor)
+│       ├── Problem1.ipynb
+│       ├── Problem2_updated.ipynb
+│       ├── Problem3.ipynb
+│       ├── HighOsci.ipynb
+│       └── BS_Model.ipynb
 │
-├── # ─── Legacy Notebooks (original explorations) ───
-├── Adjoint_Method(Problem1).ipynb
-├── Adjoint_Method(Problem2)updated.ipynb
-├── Adjoint_Method(Problem3).ipynb
-├── Adjoint_Method(1D-high-Osci).ipynb
-└── Adjoint_Method(BS Model).ipynb
+├── results/                        # Generated plots (gitignored)
+└── data/                           # Data files
 ```
 
 ## Quick Start
@@ -68,7 +72,7 @@ Implementation uses `jax.custom_vjp` + `jax.pure_callback` to wrap the numpy PDE
 
 ```bash
 # Using conda (recommended)
-conda activate comath    # or your JAX-enabled environment
+# Using JAX-enabled environment
 
 # Install dependencies
 pip install "jax[cpu]>=0.4.17" flax optax matplotlib numpy scipy
@@ -77,7 +81,7 @@ pip install "jax[cpu]>=0.4.17" flax optax matplotlib numpy scipy
 ### Run Gradient Verification
 
 ```bash
-python run_phase2.py --verify
+python scripts/run_phase2.py --verify
 ```
 Expected output: `PASS` with relative error < 1e-5 for all problems.
 
@@ -85,18 +89,19 @@ Expected output: `PASS` with relative error < 1e-5 for all problems.
 
 ```bash
 # Problem 2: Pure Adjoint vs Adjoint+NN
-python run_phase2.py --problem2
+python scripts/run_phase2.py --problem2
 
 # High-frequency challenge (ω=15): MLP vs Fourier vs SIREN
-python run_phase2.py --highosci
+python scripts/run_phase2.py --highosci
 
 # Run everything
-python run_phase2.py
+python scripts/run_phase2.py
 ```
 
 ### Interactive Demo
 
 ```bash
+cd notebooks
 jupyter notebook Adjoint_NN_Demo.ipynb
 ```
 

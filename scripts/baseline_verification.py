@@ -4,7 +4,14 @@ Phase 1 - Step 1.3: Baseline Reproduction
 
 Run all problems through the modular solver and verify results
 match the original notebooks.
+
+Usage (from repo root):
+    python scripts/baseline_verification.py
 """
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
 
 import numpy as np
 import matplotlib

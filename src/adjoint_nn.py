@@ -26,8 +26,12 @@ from functools import partial
 # Enable 64-bit precision (critical for PDE accuracy)
 jax.config.update('jax_enable_x64', True)
 
-from pde_adjoint_solver import forward_solve, adjoint_solve
-from problems import get_problem
+try:
+    from .pde_adjoint_solver import forward_solve, adjoint_solve
+    from .problems import get_problem
+except ImportError:
+    from pde_adjoint_solver import forward_solve, adjoint_solve
+    from problems import get_problem
 
 
 # ===================================================================

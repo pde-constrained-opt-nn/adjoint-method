@@ -7,12 +7,16 @@ Runs all Phase 2 experiments:
   2. Adjoint+NN on Problem 2 (baseline comparison)
   3. High-frequency challenge: MLP vs Fourier vs SIREN
 
-Usage:
-    python run_phase2.py              # Run all experiments
-    python run_phase2.py --verify     # Gradient verification only
-    python run_phase2.py --problem2   # Problem 2 only
-    python run_phase2.py --highosci   # High-freq experiments only
+Usage (from repo root):
+    python scripts/run_phase2.py              # Run all experiments
+    python scripts/run_phase2.py --verify     # Gradient verification only
+    python scripts/run_phase2.py --problem2   # Problem 2 only
+    python scripts/run_phase2.py --highosci   # High-freq experiments only
 """
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
 
 import argparse
 import numpy as np
