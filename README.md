@@ -46,12 +46,13 @@ adjoint-method/
 ├── src/                            # Core source code
 │   ├── __init__.py                 #   Package init (re-exports all public API)
 │   ├── pde_adjoint_solver.py       #   Forward & adjoint PDE solvers (numpy)
-│   ├── problems.py                 #   Problem registry (Problem 1–3, High-Osci)
+│   ├── problems.py                 #   Problem registry (Problem 1–3, high-osci, problem4 alias)
 │   └── adjoint_nn.py               #   Adjoint+NN hybrid (JAX/Flax/Optax)
 │
 ├── scripts/                        # CLI experiment runners
-│   ├── run_phase2.py               #   Phase 2: gradient verify + comparisons
-│   └── baseline_verification.py    #   Phase 1: baseline reproduction
+│   ├── run_phase2.py               #   Phase 2: reproducible runs + metrics export
+│   ├── baseline_verification.py    #   Phase 1: baseline reproduction
+│   └── regression_checks.py        #   Lightweight regression checks for fixed bugs
 │
 ├── notebooks/                      # Jupyter notebooks
 │   ├── Adjoint_NN_Demo.ipynb       #   Interactive demo & walkthrough
@@ -71,12 +72,18 @@ adjoint-method/
 ### Environment Setup
 
 ```bash
-# Using conda (recommended)
-# Using JAX-enabled environment
-
-# Install dependencies
-pip install "jax[cpu]>=0.4.17" flax optax matplotlib numpy scipy
+# Recommended pinned stack (avoid JAX/Flax mismatch)
+pip install \
+  "jax[cpu]==0.4.28" \
+  "flax==0.8.5" \
+  "optax==0.2.2" \
+  "numpy<2.0" \
+  "scipy>=1.10,<1.13" \
+  "matplotlib>=3.5"
 ```
+
+If you see `AttributeError: module 'jax.sharding' has no attribute 'AbstractMesh'`,
+your JAX/Flax versions are incompatible and must be re-pinned.
 
 ### Run Gradient Verification
 
@@ -84,6 +91,12 @@ pip install "jax[cpu]>=0.4.17" flax optax matplotlib numpy scipy
 python scripts/run_phase2.py --verify
 ```
 Expected output: `PASS` with relative error < 1e-5 for all problems.
+
+```bash
+python scripts/regression_checks.py
+```
+Expected output: all checks `PASS` (problem4 alias, scheme-aware time-index update,
+baseline relative save path, lazy import behavior).
 
 ### Run Experiments
 
@@ -94,9 +107,16 @@ python scripts/run_phase2.py --problem2
 # High-frequency challenge (ω=15): MLP vs Fourier vs SIREN
 python scripts/run_phase2.py --highosci
 
+# Problem 4 baseline (alias to high-osci): Pure Adjoint only
+python scripts/run_phase2.py --problem4
+
 # Run everything
 python scripts/run_phase2.py
 ```
+
+All runs export:
+- `results/phase2/metrics.json`
+- `results/phase2/summary.md`
 
 ### Interactive Demo
 
@@ -116,15 +136,20 @@ Discrete adjoint gradient matches finite differences to machine precision:
 | Method | Final Loss (3000 iter) | Improvement |
 |---|---|---|
 | Pure Adjoint | 5.63e-05 | baseline |
-| **Adjoint+NN (MLP)** | **5.98e-06** | **9.4× better** |
+| **Adjoint+NN (MLP)** | **5.62e-06** | **10.0× better** |
 
 ### High-Frequency Challenge (ω=15)
 | Method | Final Loss (5000 iter) | Notes |
 |---|---|---|
-| Pure Adjoint | 6.05e-02 | ~0% improvement, stuck |
-| Adjoint+MLP | 6.10e-02 | Spectral bias, cannot learn ω=15 |
-| **Adjoint+Fourier** | **1.96e-02** | **68% reduction**, Fourier features overcome spectral bias |
-| Adjoint+SIREN | 5.83e-02 | Unstable training, needs LR tuning |
+| Pure Adjoint | 6.05e-02 | ~0% reduction from its own initialization |
+| Adjoint+MLP | 6.10e-02 | ~0% reduction, strong spectral bias |
+| **Adjoint+Fourier** | **6.23e-03** | **89.8% reduction**, best on ω=15 |
+| Adjoint+SIREN | 5.45e-02 | 10.7% reduction, still unstable |
+
+### High-Osci Visualization
+The latest notebook comparison figure (original scale + unified scale + loss curves):
+
+![High-Osci Comparison](notebooks/high_osci_compare.svg)
 
 ## Technical Details
 
@@ -146,6 +171,7 @@ The continuous adjoint (`-p_t - α p_xx = misfit`) gives a gradient that differs
 |---|---|---|
 | **SourceMLP** | Standard tanh MLP | Low-frequency problems |
 | **FourierMLP** | Random Fourier feature input encoding | High-frequency problems (set `frequency_scale ≈ ω`) |
+| **FixedFourierMLP** | Deterministic Fourier basis (`arch=fourier_fixed`) | High-osci stability + reproducibility |
 | **SIREN** | sin activation with ω₀ scaling | Periodic signals (needs careful LR tuning) |
 
 ### Problem Definitions
@@ -156,6 +182,7 @@ The continuous adjoint (`-p_t - α p_xx = misfit`) gives a gradient that differs
 | `problem2` | [sin(πx) − 0.5sin(2πx)] sin(πt) | Implicit | Multi-mode spatial structure |
 | `problem3` | sin(2πx) cos(πt) | Explicit | Separable standing wave |
 | `high-osci` | sin(15πx) cos(15πt) | Implicit | ω=15, extreme spectral bias |
+| `problem4` | alias to `high-osci` | Implicit | Naming alias used in report |
 
 ## Development Progress
 
@@ -169,9 +196,18 @@ The continuous adjoint (`-p_t - α p_xx = misfit`) gives a gradient that differs
 - [x] `jax.custom_vjp` + `jax.pure_callback` wrapping numpy solver
 - [x] Discrete adjoint gradient (discretize-then-optimize)
 - [x] Gradient verification PASS (< 1e-5 relative error)
-- [x] Three Flax architectures: MLP, FourierMLP, SIREN
-- [x] Problem 2 comparison: Adjoint+NN 9.4× better than Pure Adjoint
-- [x] High-frequency experiment: Fourier MLP achieves 68% loss reduction
+- [x] Three Flax architectures: MLP, FourierMLP/FixedFourierMLP, SIREN
+- [x] Problem 2 comparison: Adjoint+NN (MLP) ~10× better than Pure Adjoint
+- [x] High-frequency experiment update: Fourier reaches 6.23e-03 (~89.8% reduction)
+- [x] `problem4` alias formalized (`problem4 == high-osci`)
+- [x] Training metrics added (`wall_time_sec`, `sec_per_1000_iter`, `best_loss`)
+- [x] Notebook comparison plots upgraded (dual-scale heatmaps + non-overlapping layout)
+
+### ✅ Phase 2.5 — Robustness & Reproducibility (Complete)
+- [x] Scheme-aware time-index update fix is regression-protected
+- [x] Relative output paths in baseline scripts
+- [x] Lazy imports in `src/__init__.py` (numpy-only usage without JAX)
+- [x] Lightweight regression suite (`scripts/regression_checks.py`)
 
 ### 🔲 Phase 3 — Alignment & Extensions (In Progress)
 - [ ] Align grid conventions with Mark's NN solver (interior-only vs boundary-inclusive)
@@ -189,16 +225,16 @@ The continuous adjoint (`-p_t - α p_xx = misfit`) gives a gradient that differs
 ## Dependencies
 
 ```
-jax >= 0.4.17
-flax >= 0.7.0
-optax >= 0.1.5
-numpy >= 1.24.0, < 2.0
-scipy >= 1.10.0, < 1.13
-matplotlib >= 3.5.0
+jax[cpu] == 0.4.28
+flax == 0.8.5
+optax == 0.2.2
+numpy < 2.0
+scipy >= 1.10, < 1.13
+matplotlib >= 3.5
 ```
 
 ## References
 
-- Yang, Y. et al. "Optimal control of partial differential equations using neural network surrogates" (arXiv:2408.12404)
+- Khimin, D. et al. "Optimal control of partial differential equations using neural network surrogates" (arXiv:2408.12404)
 - Tancik, M. et al. "Fourier Features Let Networks Learn High Frequency Functions in Low Dimensional Domains" (NeurIPS 2020) — FourierMLP
 - Sitzmann, V. et al. "Implicit Neural Representations with Periodic Activation Functions" (NeurIPS 2020) — SIREN

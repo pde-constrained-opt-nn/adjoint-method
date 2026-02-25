@@ -35,7 +35,7 @@ def get_problem(name, **overrides):
     Parameters
     ----------
     name : str
-        Problem identifier (e.g., 'problem1', 'high-osci').
+        Problem identifier (e.g., 'problem1', 'high-osci', 'problem4').
     **overrides
         Override default grid/domain parameters (nx, nt, etc.).
 
@@ -187,3 +187,12 @@ class HighOscillatory(ProblemBase):
         w = self.omega
         return (-w * np.pi * np.sin(w * np.pi * T) * np.sin(w * np.pi * X)
                 + w ** 2 * np.pi ** 2 * np.cos(w * np.pi * T) * np.sin(w * np.pi * X))
+
+
+@register('problem4')
+class Problem4HighOscillatoryAlias(HighOscillatory):
+    """
+    Problem 4 alias in the project report:
+      problem4 == high-osci (ω=15 by default)
+    """
+    pass

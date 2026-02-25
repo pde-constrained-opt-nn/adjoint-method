@@ -21,16 +21,23 @@ import jax
 import jax.numpy as jnp
 import flax.linen as nn
 import optax
+import time
 from functools import partial
 
 # Enable 64-bit precision (critical for PDE accuracy)
 jax.config.update('jax_enable_x64', True)
 
 try:
-    from .pde_adjoint_solver import forward_solve, adjoint_solve
+    from .pde_adjoint_solver import (
+        forward_solve, adjoint_solve,
+        factor_tridiagonal, solve_tridiagonal_lu,
+    )
     from .problems import get_problem
 except ImportError:
-    from pde_adjoint_solver import forward_solve, adjoint_solve
+    from pde_adjoint_solver import (
+        forward_solve, adjoint_solve,
+        factor_tridiagonal, solve_tridiagonal_lu,
+    )
     from problems import get_problem
 
 
@@ -79,20 +86,20 @@ def discrete_adjoint_gradient(misfit, alpha, dx, dt, nx, nt, scheme='implicit'):
         #            ∂J/∂f_0 = 0
 
         N_int = nx - 2
-        main = (1.0 + 2.0 * lam) * np.ones(N_int)
-        off = -lam * np.ones(N_int - 1)
-        A = np.diag(main) + np.diag(off, 1) + np.diag(off, -1)
+        main = (1.0 + 2.0 * lam) * np.ones(N_int, dtype=np.float64)
+        off = -lam * np.ones(N_int - 1, dtype=np.float64)
+        l, u_diag, u_upper = factor_tridiagonal(off, main, off)
 
         mu = np.zeros((nt, nx))
 
         # Terminal
-        mu[nt - 1, 1:-1] = np.linalg.solve(
-            A, -misfit[nt - 1, 1:-1] * dx * dt)
+        mu[nt - 1, 1:-1] = solve_tridiagonal_lu(
+            l, u_diag, u_upper, -misfit[nt - 1, 1:-1] * dx * dt)
 
         # Backward sweep
         for n in range(nt - 2, 0, -1):
             rhs = mu[n + 1, 1:-1] - misfit[n, 1:-1] * dx * dt
-            mu[n, 1:-1] = np.linalg.solve(A, rhs)
+            mu[n, 1:-1] = solve_tridiagonal_lu(l, u_diag, u_upper, rhs)
 
         # Gradient
         grad_f[1:, 1:-1] = -dt * mu[1:, 1:-1]
@@ -261,6 +268,46 @@ class FourierMLP(nn.Module):
         return nn.Dense(1)(x).squeeze(-1)
 
 
+class FixedFourierMLP(nn.Module):
+    """
+    MLP with deterministic (non-trainable) Fourier features.
+
+    This is more stable than learnable random features for highly oscillatory
+    targets because it guarantees coverage of the requested frequency band.
+    """
+    hidden_dims: tuple = (256, 256, 256)
+    num_frequencies: int = 128
+    frequency_scale: float = 15.0
+    activation: str = 'tanh'
+
+    @nn.compact
+    def __call__(self, coords):
+        in_dim = coords.shape[-1]
+        if in_dim < 2:
+            raise ValueError("FixedFourierMLP expects at least 2 input dimensions [x, t].")
+
+        n = self.num_frequencies
+        n_x = n // 2
+        n_t = n - n_x
+
+        # Deterministic axis-aligned frequency bank in normalized coordinates.
+        freqs_x = jnp.linspace(1.0, self.frequency_scale, max(1, n_x))
+        freqs_t = jnp.linspace(1.0, self.frequency_scale, max(1, n_t))
+        b_x = jnp.concatenate([freqs_x, jnp.zeros(n_t)], axis=0)
+        b_t = jnp.concatenate([jnp.zeros(n_x), freqs_t], axis=0)
+        B = jnp.stack([b_x, b_t], axis=0)  # (2, n)
+
+        proj = coords[..., :2] @ B
+        x = jnp.concatenate([jnp.sin(2 * jnp.pi * proj),
+                             jnp.cos(2 * jnp.pi * proj)], axis=-1)
+
+        act_fn = {'tanh': nn.tanh, 'relu': nn.relu, 'sigmoid': nn.sigmoid}[self.activation]
+        for dim in self.hidden_dims:
+            x = nn.Dense(dim)(x)
+            x = act_fn(x)
+        return nn.Dense(1)(x).squeeze(-1)
+
+
 class SIREN(nn.Module):
     """
     SIREN network (Sitzmann et al., 2020).
@@ -292,6 +339,7 @@ def create_model(arch='mlp', **kwargs):
     models = {
         'mlp': SourceMLP,
         'fourier': FourierMLP,
+        'fourier_fixed': FixedFourierMLP,
         'siren': SIREN,
     }
     if arch not in models:
@@ -338,7 +386,8 @@ def nn_to_grid(model, params, x_grid, t_grid):
 def train_adjoint_nn(problem_name, arch='mlp', model_kwargs=None,
                      lr=1e-3, max_iter=3000, lr_decay=0.95,
                      lambda_reg=0.0, seed=42, log_every=100,
-                     verbose=True):
+                     lr_schedule='exponential', warmup_ratio=0.05,
+                     grad_clip=1.0, verbose=True):
     """
     Train NN source estimator using adjoint-based gradients.
 
@@ -347,7 +396,7 @@ def train_adjoint_nn(problem_name, arch='mlp', model_kwargs=None,
     problem_name : str
         Problem identifier (e.g., 'problem2', 'high-osci').
     arch : str
-        NN architecture: 'mlp', 'fourier', or 'siren'.
+        NN architecture: 'mlp', 'fourier', 'fourier_fixed', or 'siren'.
     model_kwargs : dict or None
         Extra kwargs for model constructor.
     lr : float
@@ -362,6 +411,12 @@ def train_adjoint_nn(problem_name, arch='mlp', model_kwargs=None,
         Random seed for initialization.
     log_every : int
         Print interval.
+    lr_schedule : str
+        Learning-rate scheduler: 'exponential' or 'cosine'.
+    warmup_ratio : float
+        Warmup ratio for cosine schedule.
+    grad_clip : float or None
+        Global gradient clipping norm. Set None to disable.
     verbose : bool
 
     Returns
@@ -372,12 +427,16 @@ def train_adjoint_nn(problem_name, arch='mlp', model_kwargs=None,
         'f_opt'        : optimized f on grid, shape (nt, nx)
         'problem'      : Problem object
         'model'        : Flax model
+        'wall_time_sec': total training wall time (seconds)
+        'sec_per_1000_iter': normalized training time
+        'best_loss'    : minimum loss observed during training
     """
     # --- Setup problem ---
     prob = get_problem(problem_name)
     if verbose:
         print(prob.summary())
         print(f"  Arch: {arch}, LR: {lr}, Iters: {max_iter}")
+        print(f"  Schedule: {lr_schedule}, grad_clip: {grad_clip}, seed: {seed}")
         print()
 
     # --- Setup model ---
@@ -407,15 +466,29 @@ def train_adjoint_nn(problem_name, arch='mlp', model_kwargs=None,
         return data_loss + reg_loss
 
     # --- Optimizer ---
-    schedule = optax.exponential_decay(
-        init_value=lr,
-        transition_steps=max_iter,
-        decay_rate=lr_decay,
-    )
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.adam(schedule),
-    )
+    if lr_schedule == 'cosine':
+        warmup_steps = max(1, int(warmup_ratio * max_iter))
+        schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=lr,
+            warmup_steps=warmup_steps,
+            decay_steps=max_iter + 1,
+            end_value=max(lr * 1e-2, 1e-6),
+        )
+    elif lr_schedule == 'exponential':
+        schedule = optax.exponential_decay(
+            init_value=lr,
+            transition_steps=max_iter,
+            decay_rate=lr_decay,
+        )
+    else:
+        raise ValueError("lr_schedule must be 'exponential' or 'cosine'.")
+
+    opt_ops = []
+    if grad_clip is not None:
+        opt_ops.append(optax.clip_by_global_norm(grad_clip))
+    opt_ops.append(optax.adam(schedule))
+    optimizer = optax.chain(*opt_ops)
     opt_state = optimizer.init(params)
 
     # --- Training loop ---
@@ -428,16 +501,30 @@ def train_adjoint_nn(problem_name, arch='mlp', model_kwargs=None,
         new_params = optax.apply_updates(params, updates)
         return new_params, new_opt_state, loss
 
+    start_time = time.perf_counter()
+    best_loss = np.inf
+
     for it in range(max_iter + 1):
         params, opt_state, loss = train_step(params, opt_state)
         loss_val = float(loss)
         loss_history.append(loss_val)
+        if loss_val < best_loss:
+            best_loss = loss_val
 
         if verbose and it % log_every == 0:
-            print(f"  Iter {it:5d}/{max_iter}: loss = {loss_val:.6e}")
+            elapsed = time.perf_counter() - start_time
+            sec_per_1000 = elapsed / max(1, it + 1) * 1000.0
+            print(
+                f"  Iter {it:5d}/{max_iter}: "
+                f"loss = {loss_val:.6e}, best = {best_loss:.6e}, "
+                f"elapsed = {elapsed:.2f}s, sec/1k = {sec_per_1000:.2f}"
+            )
 
     # --- Final evaluation ---
     f_opt = np.asarray(nn_to_grid(model, params, x_grid, t_grid))
+
+    wall_time = time.perf_counter() - start_time
+    sec_per_1000_iter = wall_time / max(1, max_iter + 1) * 1000.0
 
     return {
         'params': params,
@@ -445,6 +532,9 @@ def train_adjoint_nn(problem_name, arch='mlp', model_kwargs=None,
         'f_opt': f_opt,
         'problem': prob,
         'model': model,
+        'wall_time_sec': wall_time,
+        'sec_per_1000_iter': sec_per_1000_iter,
+        'best_loss': float(best_loss),
     }
 
 
@@ -561,7 +651,11 @@ def plot_comparison(results, save_path=None):
         print(f"Plot saved: {save_path}")
         plt.close()
     else:
-        plt.show()
+        # Avoid noisy warnings in non-interactive backends (e.g., FigureCanvasAgg).
+        if 'agg' in plt.get_backend().lower():
+            print("Non-interactive backend detected; skipping plt.show().")
+        else:
+            plt.show()
 
 
 # ===================================================================
@@ -573,10 +667,15 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Adjoint + NN PDE Optimization')
     parser.add_argument('--problem', default='problem2', help='Problem name')
-    parser.add_argument('--arch', default='mlp', choices=['mlp', 'fourier', 'siren'])
+    parser.add_argument('--arch', default='mlp',
+                        choices=['mlp', 'fourier', 'fourier_fixed', 'siren'])
     parser.add_argument('--max_iter', type=int, default=3000)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--lambda_reg', type=float, default=0.0)
+    parser.add_argument('--lr_schedule', default='exponential',
+                        choices=['exponential', 'cosine'])
+    parser.add_argument('--grad_clip', type=float, default=1.0)
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--verify_grad', action='store_true',
                         help='Run gradient verification before training')
     parser.add_argument('--save_plot', default=None, help='Save path for plot')
@@ -600,6 +699,9 @@ if __name__ == '__main__':
         lr=args.lr,
         max_iter=args.max_iter,
         lambda_reg=args.lambda_reg,
+        lr_schedule=args.lr_schedule,
+        grad_clip=args.grad_clip,
+        seed=args.seed,
     )
 
     print(f"\n  Final loss: {results['losses'][-1]:.6e}")

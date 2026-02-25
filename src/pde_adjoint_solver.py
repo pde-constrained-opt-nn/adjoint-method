@@ -19,6 +19,70 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# Tridiagonal Utilities (O(n) solve for implicit 1D heat systems)
+# ---------------------------------------------------------------------------
+
+def factor_tridiagonal(lower, diag, upper):
+    """
+    LU-factorize a tridiagonal matrix in compact form.
+
+    Parameters
+    ----------
+    lower : ndarray, shape (n-1,)
+        Sub-diagonal entries.
+    diag : ndarray, shape (n,)
+        Main diagonal entries.
+    upper : ndarray, shape (n-1,)
+        Super-diagonal entries.
+
+    Returns
+    -------
+    l : ndarray, shape (n-1,)
+        Unit-lower multipliers.
+    u_diag : ndarray, shape (n,)
+        Upper-triangular diagonal after elimination.
+    u_upper : ndarray, shape (n-1,)
+        Upper-triangular super-diagonal (unchanged copy of upper).
+    """
+    n = len(diag)
+    if n == 0:
+        return np.array([]), np.array([]), np.array([])
+    if n == 1:
+        return np.array([]), diag.astype(np.float64).copy(), np.array([])
+
+    l = np.empty(n - 1, dtype=np.float64)
+    u_diag = diag.astype(np.float64).copy()
+    u_upper = upper.astype(np.float64).copy()
+
+    for i in range(n - 1):
+        l[i] = lower[i] / u_diag[i]
+        u_diag[i + 1] -= l[i] * u_upper[i]
+
+    return l, u_diag, u_upper
+
+
+def solve_tridiagonal_lu(l, u_diag, u_upper, rhs):
+    """
+    Solve Ax=rhs using compact LU factors from `factor_tridiagonal`.
+    """
+    n = len(u_diag)
+    if n == 0:
+        return np.array([], dtype=np.float64)
+    if n == 1:
+        return np.array([rhs[0] / u_diag[0]], dtype=np.float64)
+
+    y = rhs.astype(np.float64).copy()
+    for i in range(1, n):
+        y[i] -= l[i - 1] * y[i - 1]
+
+    x = np.empty(n, dtype=np.float64)
+    x[-1] = y[-1] / u_diag[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = (y[i] - u_upper[i] * x[i + 1]) / u_diag[i]
+    return x
+
+
+# ---------------------------------------------------------------------------
 # Forward Solver
 # ---------------------------------------------------------------------------
 
@@ -65,9 +129,9 @@ def forward_solve(f, u0, bc_left, bc_right, alpha, dx, dt, nx, nt,
 
     if scheme == 'implicit':
         N_int = nx - 2
-        main = (1.0 + 2.0 * lam) * np.ones(N_int)
-        off = -lam * np.ones(N_int - 1)
-        A = np.diag(main) + np.diag(off, 1) + np.diag(off, -1)
+        main = (1.0 + 2.0 * lam) * np.ones(N_int, dtype=np.float64)
+        off = -lam * np.ones(N_int - 1, dtype=np.float64)
+        l, u_diag, u_upper = factor_tridiagonal(off, main, off)
 
         for n in range(nt - 1):
             u[n + 1, 0] = bc_left[n + 1]
@@ -77,7 +141,7 @@ def forward_solve(f, u0, bc_left, bc_right, alpha, dx, dt, nx, nt,
             rhs[0] += lam * u[n + 1, 0]
             rhs[-1] += lam * u[n + 1, -1]
 
-            u[n + 1, 1:-1] = np.linalg.solve(A, rhs)
+            u[n + 1, 1:-1] = solve_tridiagonal_lu(l, u_diag, u_upper, rhs)
 
     elif scheme == 'explicit':
         cfl = lam
@@ -135,13 +199,13 @@ def adjoint_solve(residual, alpha, dx, dt, nx, nt, scheme='implicit'):
 
     if scheme == 'implicit':
         N_int = nx - 2
-        main = (1.0 + 2.0 * lam) * np.ones(N_int)
-        off = -lam * np.ones(N_int - 1)
-        A = np.diag(main) + np.diag(off, 1) + np.diag(off, -1)
+        main = (1.0 + 2.0 * lam) * np.ones(N_int, dtype=np.float64)
+        off = -lam * np.ones(N_int - 1, dtype=np.float64)
+        l, u_diag, u_upper = factor_tridiagonal(off, main, off)
 
         for n in range(nt - 2, -1, -1):
             rhs = p[n + 1, 1:-1] + dt * residual[n + 1, 1:-1]
-            p[n, 1:-1] = np.linalg.solve(A, rhs)
+            p[n, 1:-1] = solve_tridiagonal_lu(l, u_diag, u_upper, rhs)
 
     elif scheme == 'explicit':
         cfl = lam
