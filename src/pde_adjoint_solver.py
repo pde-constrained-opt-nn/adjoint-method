@@ -234,8 +234,15 @@ def adjoint_optimize(f_init, u_obs, u0, bc_left, bc_right,
         # (adjoint convention: -p_t - α p_xx = +(u - u_obs), so ∇_f J = +p)
         grad = lambda_reg * f + p
 
-        # Gradient descent (interior points only)
-        f[1:-1, 1:-1] -= lr * grad[1:-1, 1:-1]
+        # Gradient descent on active grid points:
+        # - Spatial: only interior points (boundaries are Dirichlet, f at x=0/L unused)
+        # - Temporal: depends on scheme
+        #   implicit uses f[n+1] for n=0..nt-2, so f[1..nt-1] are active
+        #   explicit uses f[n]   for n=0..nt-2, so f[0..nt-2] are active
+        if scheme == 'implicit':
+            f[1:, 1:-1] -= lr * grad[1:, 1:-1]
+        else:  # explicit
+            f[:-1, 1:-1] -= lr * grad[:-1, 1:-1]
 
         # Projection / constraint
         if constraint == 'non_negative':

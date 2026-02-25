@@ -511,9 +511,11 @@ def verify_gradient(problem_name='problem2', n_checks=5, eps=1e-5):
 # ===================================================================
 
 def plot_comparison(results, save_path=None):
-    """Plot true vs recovered f and loss curve."""
-    import matplotlib
-    matplotlib.use('Agg')
+    """Plot true vs recovered f and loss curve.
+
+    In notebook usage (save_path=None), keep the current interactive backend.
+    In script usage (save_path provided), save and close the figure.
+    """
     import matplotlib.pyplot as plt
 
     prob = results['problem']
@@ -557,7 +559,9 @@ def plot_comparison(results, save_path=None):
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"Plot saved: {save_path}")
-    plt.close()
+        plt.close()
+    else:
+        plt.show()
 
 
 # ===================================================================

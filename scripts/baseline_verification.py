@@ -178,6 +178,5 @@ if __name__ == '__main__':
         print(f"{cfg['label']:<35} {res['final_loss']:>12.4e} "
               f"{cfg['expected_loss']:>12.4e} {res['status']:>10}")
 
-    plot_results(results,
-                 savepath='/sessions/gallant-nifty-ramanujan/mnt/PDE/'
-                          '1_Adjoint_Method/baseline_results.png')
+    savepath = str(Path(__file__).resolve().parent.parent / 'results' / 'baseline_results.png')
+    plot_results(results, savepath=savepath)
