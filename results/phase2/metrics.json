@@ -1,0 +1,10 @@
+{
+  "schema_version": "alignment-v1",
+  "timestamp": "2026-02-25T00:46:41",
+  "seed": 42,
+  "alignment_profile": "/Users/handsomedoge/Desktop/PDE/1_Adjoint_Method/configs/alignment_profile.yaml",
+  "grid_convention": "interior",
+  "time_convention": "exclude_t0",
+  "results": {},
+  "records": []
+}

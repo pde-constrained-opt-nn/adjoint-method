@@ -149,7 +149,7 @@ Discrete adjoint gradient matches finite differences to machine precision:
 ### High-Osci Visualization
 The latest notebook comparison figure (original scale + unified scale + loss curves):
 
-![High-Osci Comparison](notebooks/high_osci_compare.svg)
+![High-Osci Comparison](notebooks/high_osci_compare.png)
 
 ## Technical Details
 
